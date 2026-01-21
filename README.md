@@ -74,8 +74,6 @@ Use root cutout = 0.1R and dont use the section data we provided for the group p
 
 
 
-
-
 Inputs for final report:
 
 
@@ -88,7 +86,7 @@ N\_blades: 4
 
 ISA altitude: 500m
 
-design climb speed: 10 m/s
+design climb speed: 3 m/s
 
 NACA airfoil: 2412
 
@@ -99,6 +97,4 @@ tip mach number: 0.63
 design blade loading: 0.1 
 
 relation R\_upper/R\_lower = 1
-
-
 
