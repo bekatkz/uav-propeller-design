@@ -70,7 +70,7 @@ def objective_function(x, base_prop1, base_prop2, fluid_model, aircraft_data):
     
     # --- HIGH-RES SMOOTHING ---
     # We ignore the original 10 points and create 40 new ones
-    r_fine = get_high_res_radial_grid(n_points=40, r_root_norm=0.15)
+    r_fine = get_high_res_radial_grid(n_points=20, r_root_norm=0.15)
     
     # Create temp props for analysis
     p1 = copy.deepcopy(base_prop1)
@@ -206,9 +206,8 @@ def main():
     # 5. POST-PROCESS & PLOT
     # ==========================================
     # Reconstruct the optimized, SMOOTH propellers
-    r_fine = get_high_res_radial_grid(50)
+    r_fine = get_high_res_radial_grid(20) 
     omega_opt = x_opt[8] * 2 * np.pi / 60
-    
     p1_opt = copy.deepcopy(base_prop); p1_opt.r_R = r_fine
     p2_opt = copy.deepcopy(base_prop); p2_opt.r_R = r_fine
     

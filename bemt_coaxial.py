@@ -8,7 +8,7 @@ from access_clcd import get_CL_CD_from_neuralfoil
 
 
 def bemt_single(prop: propeller.Propeller, fl: fluid.Fluid, V_inf, omega,
-                R_cutout_frac=0.15, tol=1e-5, max_iter=500, relax=0.1):
+                R_cutout_frac=0.15, tol=1e-5, max_iter=500, relax=0.25):
     """
     BEMT solver for a single rotor.
     Includes relaxation fix (max_iter=500, relax=0.1) for stability.
@@ -223,7 +223,7 @@ def build_rotor2_inflow(rot1_out, rot1_radius, rot2, V_inf):
 
 def trim_rotor2_pitch(rot2_base: propeller.Propeller, fl: fluid.Fluid, Vinf2, omega2,
                       alpha_target_deg=2.0, trim_span=(0.30, 0.90),
-                      bounds_deg=(-5.0, 20.0), max_iter=15):
+                      bounds_deg=(-5.0, 20.0), max_iter=5):
     """
     Adjust a uniform pitch offset on rotor 2 so that mean alpha over trim_span hits alpha_target_deg.
     """
