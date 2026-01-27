@@ -1,382 +1,219 @@
-import os
+# bemt_coaxial.py
 import numpy as np
-import matplotlib.pyplot as plt
 
-import fluid
-import propeller
 from access_clcd import get_CL_CD_from_neuralfoil
 
 
-def bemt_single(prop: propeller.Propeller, fl: fluid.Fluid, V_inf, omega,
-                R_cutout_frac=0.15, tol=1e-5, max_iter=500, relax=0.25):
+def prandtl_loss(B, r, R, r_root, phi):
     """
-    BEMT solver for a single rotor.
-    Includes relaxation fix (max_iter=500, relax=0.1) for stability.
+    Tip + root loss factor F in [0..1].
+    F ~ 1 mid-span, F -> 0 near tip/root.
     """
-    radius = float(prop.radius)
-    r_R = np.asarray(prop.r_R, dtype=float)
-    r = r_R * radius
+    sphi = np.maximum(np.abs(np.sin(phi)), 1e-6)
 
-    chord = np.asarray(prop.chord, dtype=float) 
-    # Note: If prop.chord is normalized c/c_ref, multiply by prop.c_ref. 
-    # If using optimization.py which sets physical chord, this line handles it if c_ref=1.
-    if hasattr(prop, 'c_ref') and prop.c_ref is not None:
-         chord = chord * float(prop.c_ref)
+    f_tip = (B / 2.0) * (R - r) / (r * sphi + 1e-12)
+    f_root = (B / 2.0) * (r - r_root) / (r * sphi + 1e-12)
 
-    beta = np.asarray(prop.pitch, dtype=float)           # degrees
-    nblades = int(prop.nblades)
-    rho = float(fl.rho)
-    nu = float(fl.nu)
-    a_sos = float(fl.a)
-    airfoil = np.asarray(prop.airfoil)
+    F_tip = (2.0 / np.pi) * np.arccos(np.exp(-np.clip(f_tip, 0.0, 50.0)))
+    F_root = (2.0 / np.pi) * np.arccos(np.exp(-np.clip(f_root, 0.0, 50.0)))
+    F = F_tip * F_root
+    return np.clip(F, 1e-3, 1.0)
 
-    # Allow scalar or radial array inflow
-    if np.ndim(V_inf) == 0:
-        Vinf_vec = np.full_like(r_R, float(V_inf), dtype=float)
+
+def bemt_single(
+    rotor,
+    fluid,
+    V_inf,
+    omega,
+    r_R=None,
+    max_iter=80,
+    tol=1e-5,
+    relax=0.35,
+):
+    """
+    Single-rotor BEMT (axial flow).
+    Returns distributions (phi, alpha, dT/dr, dQ/dr, etc.) and totals T, Q.
+
+    Expects:
+      rotor.radius, rotor.nblades, rotor.c_ref,
+      rotor.r_R, rotor.chord (normalized), rotor.pitch (deg),
+      rotor.airfoil (int ids per station)
+      fluid.rho, fluid.a, fluid.nu
+    """
+    if r_R is None:
+        r_R = rotor.r_R
+    r_R = np.asarray(r_R, dtype=float)
+
+    R = float(rotor.radius)
+    r = R * r_R
+    r_root = float(R * r_R.min())
+
+    B = int(rotor.nblades)
+    rho = float(fluid.rho)
+    a_sound = float(fluid.a)
+    nu = float(fluid.nu)
+
+    chord = np.asarray(rotor.chord, dtype=float) * float(rotor.c_ref)  # [m]
+    pitch_deg = np.asarray(rotor.pitch, dtype=float)                   # [deg]
+    airfoil_ids = np.asarray(rotor.airfoil, dtype=int)                 # int per station
+
+    # V_inf can be scalar or array
+    if np.isscalar(V_inf):
+        Vinf_vec = float(V_inf) * np.ones_like(r_R)
     else:
         Vinf_vec = np.asarray(V_inf, dtype=float)
         if Vinf_vec.shape != r_R.shape:
-            # Interpolate V_inf to current r_R if shapes mismatch
-            # (Happens when V_inf comes from a different mesh size in coaxial)
-            pass 
+            rr = np.linspace(float(r_R.min()), float(r_R.max()), int(Vinf_vec.size))
+            Vinf_vec = np.interp(r_R, rr, Vinf_vec)
 
-    R_cutout = R_cutout_frac * radius
+    # Prevent singular behavior at hover-like low inflow
+    V_eps = 0.25
+    Vinf_eff = np.where(np.abs(Vinf_vec) < V_eps,
+                        np.sign(Vinf_vec) * V_eps + (Vinf_vec == 0.0) * V_eps,
+                        Vinf_vec)
 
+    # Induction initial guesses
+    a = 0.05 * np.ones_like(r_R)
+    ap = 0.01 * np.ones_like(r_R)
+
+    # Outputs
+    phi = np.zeros_like(r_R)
+    alpha = np.zeros_like(r_R)
     dT_dr = np.zeros_like(r_R)
-    dM_dr = np.zeros_like(r_R)
+    dQ_dr = np.zeros_like(r_R)
+    Vax = np.zeros_like(r_R)
+    Vtan = np.zeros_like(r_R)
+    W = np.zeros_like(r_R)
 
-    # Distributions
-    vi_r = np.zeros_like(r_R)          # induced velocity
-    Vax_r = np.zeros_like(r_R)         # axial at disk
-    phi_r = np.zeros_like(r_R)         # rad
-    alpha_r = np.zeros_like(r_R)       # deg
-    F_r = np.ones_like(r_R)            
+    for _ in range(int(max_iter)):
+        Vax_new = Vinf_eff * (1.0 + a)
+        Vtan_new = omega * r * (1.0 - ap)
+        W_new = np.sqrt(Vax_new**2 + Vtan_new**2) + 1e-12
+        phi_new = np.arctan2(Vax_new, Vtan_new)
 
-    vi_guess = 3.0  # warm-start       
+        pitch = np.deg2rad(pitch_deg)
+        alpha_new = pitch - phi_new
 
-    for i in range(len(r_R)):
-        # Safety checks
-        if r[i] < R_cutout or r[i] <= 0.0:
-            continue
-        
-        # Handle scalar vs array V_inf
-        if np.ndim(V_inf) == 0:
-             Vinf_i = float(V_inf)
-        else:
-             # simple nearest/direct access if grids match
-             Vinf_i = Vinf_vec[i]
+        # CL/CD from NeuralFoil accessor
+        cl = np.zeros_like(alpha_new)
+        cd = np.zeros_like(alpha_new)
+        for i in range(len(r_R)):
+            Re = max(W_new[i] * chord[i] / nu, 1e4)
+            Ma = W_new[i] / a_sound
+            cl[i], cd[i] = get_CL_CD_from_neuralfoil(int(airfoil_ids[i]), float(alpha_new[i]), float(Re), float(Ma))
 
-        sigma_l = nblades * chord[i] / (2.0 * np.pi * r[i])
+        # Normal/tangential coefficients
+        Cn = cl * np.cos(phi_new) - cd * np.sin(phi_new)
+        Ct = cl * np.sin(phi_new) + cd * np.cos(phi_new)
 
-        a_prime = 0.01
-        v_i = vi_guess
+        # Tip/root loss
+        F = prandtl_loss(B, r, R, r_root, phi_new)
 
-        # Iterate induction
-        for _ in range(max_iter):
-            V_axial = Vinf_i + v_i
-            V_tan = omega * r[i] * (1.0 - a_prime)
+        # Solidity
+        sigma = B * chord / (2.0 * np.pi * r + 1e-12)
 
-            phi = np.arctan2(V_axial, V_tan)
-            U = np.sqrt(V_axial**2 + V_tan**2)
+        # Fixed-point update for a and a'
+        denom_a = (4.0 * F * (np.sin(phi_new) ** 2)) / (sigma * (Cn + 1e-12)) - 1.0
+        denom_ap = (4.0 * F * np.sin(phi_new) * np.cos(phi_new)) / (sigma * (Ct + 1e-12)) + 1.0
 
-            alpha = beta[i] - np.degrees(phi)
+        a_new = 1.0 / np.clip(denom_a, 1e-3, 1e3)
+        ap_new = 1.0 / np.clip(denom_ap, 1e-3, 1e3)
 
-            Re = U * chord[i] / nu
-            Ma = U / a_sos
+        a_new = np.clip(a_new, -0.2, 1.0)
+        ap_new = np.clip(ap_new, -0.5, 0.5)
 
-            cl, cd = get_CL_CD_from_neuralfoil(int(airfoil[i]), alpha=alpha, Re=Re, Ma=Ma)
+        # Section forces
+        q = 0.5 * rho * W_new**2
+        L = q * chord * cl
+        D = q * chord * cd
 
-            Cn = cl * np.cos(phi) - cd * np.sin(phi)
-            Ct = cl * np.sin(phi) + cd * np.cos(phi)
+        dT_new = B * (L * np.cos(phi_new) - D * np.sin(phi_new))
+        dQ_new = B * r * (L * np.sin(phi_new) + D * np.cos(phi_new))
 
-            # Tip loss
-            f = (nblades / 2.0) * (radius - r[i]) / (r[i] * max(np.sin(phi), 1e-6))
-            f = max(f, 1e-4)
-            F = min(2.0 / np.pi * np.arccos(np.exp(-f)), 1.0)
+        err = float(np.max(np.abs(phi_new - phi)))
 
-            # Update a'
-            kappap = 4.0 * F * np.sin(phi) * np.cos(phi) / max(sigma_l * Ct, 1e-8)
-            a_prime_new = 1.0 / (kappap + 1.0)
-            a_prime = relax * a_prime_new + (1.0 - relax) * a_prime
+        # Relaxation
+        a = (1.0 - relax) * a + relax * a_new
+        ap = (1.0 - relax) * ap + relax * ap_new
 
-            # Update v_i
-            # Momentum: 4*F*a*(1-a) = sigma*Cn ... approx v_i relation
-            # General BEMT residual approach
-            inside = F * (Vinf_i**2 * F + Cn * sigma_l * U**2)
-            # Avoid negative sqrt
-            if inside < 0: 
-                inside = 0
-            
-            root_term = np.sqrt(inside)
-            v_i_new = np.sign(Cn) * (1.0 / (2.0 * F)) * (root_term - Vinf_i * F)
+        # Save
+        phi = phi_new
+        alpha = alpha_new
+        dT_dr = dT_new
+        dQ_dr = dQ_new
+        Vax = Vax_new
+        Vtan = Vtan_new
+        W = W_new
 
-            if abs(v_i_new - v_i) < tol:
-                v_i = v_i_new
-                break
-
-            v_i = relax * v_i_new + (1.0 - relax) * v_i
-
-        # Store
-        vi_r[i] = v_i
-        Vax_r[i] = Vinf_i + v_i
-        phi_r[i] = phi
-        alpha_r[i] = alpha
-        F_r[i] = F
-
-        # Loads
-        dT_dr[i] = 0.5 * rho * U**2 * chord[i] * nblades * Cn
-        dM_dr[i] = 0.5 * rho * U**2 * chord[i] * nblades * Ct * r[i]
-
-        vi_guess = v_i
-
-    Thrust = np.trapezoid(dT_dr, x=r)
-    Torque = np.trapezoid(dM_dr, x=r)
-
-    out = {
-        "r_R": r_R, "r": r,
-        "Vinf": Vinf_vec,
-        "vi": vi_r, "Vax": Vax_r,
-        "phi": phi_r, "alpha": alpha_r,
-        "F": F_r,
-        "dT_dr": dT_dr, "dM_dr": dM_dr
-    }
-    return Thrust, Torque, out
-
-
-def apply_pitch_offset(prop: propeller.Propeller, dtheta_deg: float):
-    """Return a new Propeller object with pitch offset (degrees) applied."""
-    p_new = propeller.Propeller(
-        nblades=prop.nblades,
-        solidity=prop.solidity,
-        radius=prop.radius,
-        omega=prop.omega,
-        r_R=np.array(prop.r_R, dtype=float),
-        chord=np.array(prop.chord, dtype=float),
-        pitch=np.array(prop.pitch, dtype=float) + float(dtheta_deg),
-        sweep=np.array(prop.sweep, dtype=float),
-        airfoil=np.array(prop.airfoil, dtype=float),
-        c_ref=prop.c_ref
-    )
-    # Ensure physical chord matches if it was set manually
-    if hasattr(prop, 'c_ref') and prop.c_ref == 1.0:
-         p_new.c_ref = 1.0
-         p_new.chord = np.array(prop.chord, dtype=float)
-    return p_new
-
-
-def build_rotor2_inflow(rot1_out, rot1_radius, rot2, V_inf):
-    """
-    Calculates the inflow distribution for Rotor 2.
-    Implements:
-      - Mass Conservation (Slipstream Contraction / "Funnel")
-      - Top-Hat profile (Undisturbed outside, Vinf+2vi inside)
-    """
-    r1 = rot1_out["r"]
-    vi1 = rot1_out["vi"]
-    
-    # 1. Calculate Average Induced Velocity on Rotor 1
-    # Weighted by area for mass balance accuracy
-    # vi_mean = Integral(vi * 2*pi*r dr) / Area
-    vi_mean = np.trapezoid(vi1 * 2 * np.pi * r1, x=r1) / (np.pi * rot1_radius**2)
-    
-    # 2. Calculate Contracted Wake Radius (Fully Developed Slipstream)
-    # Mass conservation: rho * A1 * (V + vi) = rho * A_wake * (V + 2vi)
-    # (Approximate using mean velocities for the contraction ratio)
-    V_disk = float(V_inf) + vi_mean
-    V_wake = float(V_inf) + 2.0 * vi_mean
-    
-    contraction_ratio = np.sqrt(V_disk / V_wake) if V_wake > 1e-6 else 1.0
-    R_wake = rot1_radius * contraction_ratio
-
-    print(f"   [Debug] Wake Contraction: R_disk={rot1_radius:.3f}m -> R_wake={R_wake:.3f}m")
-
-    # 3. Map to Rotor 2
-    r2 = np.asarray(rot2.r_R, dtype=float) * float(rot2.radius)
-    
-    # Interpolate vi1 distribution? 
-    # Usually, we assume the profile contracts radially. 
-    # Map r2 (inside wake) back to r1 to fetch the corresponding vi.
-    # r1_equivalent = r2 / contraction_ratio
-    
-    vi1_on_r2 = np.zeros_like(r2)
-    
-    # For points inside the wake, interpolate based on normalized position in wake
-    mask_inside = r2 <= R_wake
-    if np.any(mask_inside):
-        r1_lookup = r2[mask_inside] / contraction_ratio
-        vi1_on_r2[mask_inside] = np.interp(r1_lookup, r1, vi1, left=vi1[0], right=vi1[-1])
-
-    # 4. Apply Top-Hat Model
-    # Inside wake: V = V_inf + 2 * vi (interpolated)
-    # Outside wake: V = V_inf
-    Vinf2 = np.where(mask_inside, float(V_inf) + 2.0 * vi1_on_r2, float(V_inf))
-
-    coupling = {
-        "r2": r2,
-        "inside_slipstream": mask_inside,
-        "vi1_on_r2": vi1_on_r2,
-        "Vinf2": Vinf2,
-        "R_wake": R_wake
-    }
-    return Vinf2, coupling
-
-
-def trim_rotor2_pitch(rot2_base: propeller.Propeller, fl: fluid.Fluid, Vinf2, omega2,
-                      alpha_target_deg=2.0, trim_span=(0.30, 0.90),
-                      bounds_deg=(-5.0, 20.0), max_iter=5):
-    """
-    Adjust a uniform pitch offset on rotor 2 so that mean alpha over trim_span hits alpha_target_deg.
-    """
-    rR = np.asarray(rot2_base.r_R, dtype=float)
-
-    def mean_alpha_for_offset(dtheta):
-        rot2 = apply_pitch_offset(rot2_base, dtheta)
-        _, _, out2 = bemt_single(rot2, fl, V_inf=Vinf2, omega=omega2)
-        mask = (rR >= trim_span[0]) & (rR <= trim_span[1])
-        alpha_vals = out2["alpha"][mask]
-        if len(alpha_vals) == 0: return 0.0, out2
-        return float(np.mean(alpha_vals)), out2
-
-    lo, hi = bounds_deg
-    alpha_lo, out_lo = mean_alpha_for_offset(lo)
-    alpha_hi, out_hi = mean_alpha_for_offset(hi)
-
-    f_lo = alpha_lo - alpha_target_deg
-    f_hi = alpha_hi - alpha_target_deg
-
-    if f_lo * f_hi > 0:
-        if abs(f_lo) < abs(f_hi):
-            return lo, out_lo
-        else:
-            return hi, out_hi
-
-    mid = lo
-    out_mid = out_lo
-    
-    for _ in range(max_iter):
-        mid = 0.5 * (lo + hi)
-        alpha_mid, out_mid = mean_alpha_for_offset(mid)
-        f_mid = alpha_mid - alpha_target_deg
-
-        if abs(f_mid) < 0.1: 
+        if err < tol:
             break
 
-        if f_lo * f_mid <= 0:
-            hi = mid
-            f_hi = f_mid
-        else:
-            lo = mid
-            f_lo = f_mid
+    T = float(np.trapz(dT_dr, r))
+    Q = float(np.trapz(dQ_dr, r))
 
-    return float(mid), out_mid
+    return {
+        "r_R": r_R, "r": r,
+        "phi": phi, "alpha": alpha,
+        "Vax": Vax, "Vtan": Vtan, "W": W,
+        "dT_dr": dT_dr, "dQ_dr": dQ_dr,
+        "T": T, "Q": Q,
+    }
 
 
-def coaxial_bemt_fixed(rot1, rot2, fl, V_inf, omega1, omega2, trim_rotor2=True, alpha_target_deg=3.0):
+def coaxial_bemt_fixed(
+    rotor1,
+    rotor2,
+    fluid,
+    V_inf,
+    omega1,
+    omega2,
+    r_R=None,
+    max_coupling_iter=25,
+    coupling_tol=1e-3,
+    trim_rotor2=False,     # accepted for compatibility; not used
+    alpha_target_deg=3.0,  # accepted for compatibility; not used
+    **kwargs,
+):
+    """
+    Coaxial coupling (simple fully-developed slipstream model):
+      - Rotor 1 sees V_inf
+      - Rotor 2 sees V_inf + 2*vi1 inside rotor1 disk, and V_inf outside.
+    Iterated with relaxation but always capped.
+    """
+    if r_R is None:
+        r_R = rotor1.r_R
+    r_R = np.asarray(r_R, dtype=float)
 
-    # 1. Solve Rotor 1
-    T1, Q1, out1 = bemt_single(rot1, fl, V_inf=V_inf, omega=omega1)
+    V2_profile = float(V_inf) * np.ones_like(r_R)
 
-    # 2. Build Inflow for Rotor 2 (with Contraction)
-    Vinf2, coupling = build_rotor2_inflow(out1, rot1.radius, rot2, V_inf)
+    out1 = None
+    out2 = None
 
-    # 3. Solve Rotor 2 (with Trim)
-    dtheta2 = 0.0
-    if trim_rotor2:
-        dtheta2, out2 = trim_rotor2_pitch(
-            rot2_base=rot2, fl=fl, Vinf2=Vinf2, omega2=omega2,
-            alpha_target_deg=alpha_target_deg
-        )
-        rot2_used = apply_pitch_offset(rot2, dtheta2)
-        T2, Q2, out2 = bemt_single(rot2_used, fl, V_inf=Vinf2, omega=omega2)
-    else:
-        T2, Q2, out2 = bemt_single(rot2, fl, V_inf=Vinf2, omega=omega2)
+    for k in range(int(max_coupling_iter)):
+        out1 = bemt_single(rotor1, fluid, V_inf=float(V_inf), omega=float(omega1), r_R=r_R)
+
+        vi1 = out1["Vax"] - float(V_inf)  # induced increment at disk
+        dV = 2.0 * vi1                    # fully developed slipstream increment
+
+        # rotor2 points that lie inside rotor1 disk radius
+        slip_mask = (r_R * float(rotor2.radius)) <= float(rotor1.radius)
+
+        V2_new = float(V_inf) * np.ones_like(r_R)
+        V2_new[slip_mask] = float(V_inf) + dV[slip_mask]
+
+        out2 = bemt_single(rotor2, fluid, V_inf=V2_new, omega=float(omega2), r_R=r_R)
+
+        err = float(np.max(np.abs(V2_new - V2_profile)))
+        V2_profile = 0.6 * V2_profile + 0.4 * V2_new
+
+        if err < coupling_tol:
+            break
 
     totals = {
-        "T1": T1, "Q1": Q1,
-        "T2": T2, "Q2": Q2,
-        "T_total": T1 + T2,
-        "Q_total": Q1 + Q2,
-        "rotor2_pitch_offset_deg": float(dtheta2)
+        "T1": float(out1["T"]), "Q1": float(out1["Q"]),
+        "T2": float(out2["T"]), "Q2": float(out2["Q"]),
+        "T_total": float(out1["T"] + out2["T"]),
+        "Q_total": float(out1["Q"] + out2["Q"]),
     }
+    coupling = {"V2_profile": V2_profile, "coupling_iters": k + 1}
     return totals, out1, out2, coupling
-
-
-def plot_diagnostics(out1, out2, totals, coupling, title_suffix=""):
-    rR1 = out1["r_R"]
-    rR2 = out2["r_R"]
-
-    fig, axs = plt.subplots(1, 3, figsize=(16, 5))
-    
-    # Plot 1: Axial Velocities
-    axs[0].plot(rR1, out1["Vax"], label="R1 Vax")
-    axs[0].plot(rR2, out2["Vax"], label="R2 Vax")
-    axs[0].plot(rR2, coupling["Vinf2"], '--', label="R2 Inflow (Wake)")
-    axs[0].set_title(f"Velocities {title_suffix}")
-    axs[0].set_xlabel("r/R")
-    axs[0].set_ylabel("Velocity [m/s]")
-    axs[0].grid(True)
-    axs[0].legend()
-
-    # Plot 2: Alpha
-    axs[1].plot(rR1, out1["alpha"], label="R1 Alpha")
-    axs[1].plot(rR2, out2["alpha"], label="R2 Alpha")
-    axs[1].set_title("Angle of Attack")
-    axs[1].set_xlabel("r/R")
-    axs[1].set_ylabel("Alpha [deg]")
-    axs[1].grid(True)
-    axs[1].legend()
-
-    # Plot 3: Loads (Thrust Distribution)
-    axs[2].plot(rR1, out1["dT_dr"], label="R1 dT/dr")
-    axs[2].plot(rR2, out2["dT_dr"], label="R2 dT/dr")
-    axs[2].set_title("Thrust Distribution")
-    axs[2].set_xlabel("r/R")
-    axs[2].set_ylabel("dT/dr [N/m]")
-    axs[2].grid(True)
-    axs[2].legend()
-
-    print("\n=== COAXIAL RESULTS ===")
-    print(f"Rotor 2 Pitch Offset: {totals['rotor2_pitch_offset_deg']:.2f} deg")
-    print(f"T1: {totals['T1']:.2f} N, T2: {totals['T2']:.2f} N => Total: {totals['T_total']:.2f} N")
-    print(f"P1: {totals['Q1']*523:.1f} W, P2: {totals['Q2']*523:.1f} W") # Approx power display
-
-    plt.tight_layout()
-    plt.show()
-
-# =============================================================================
-# TEST BLOCK (Copy and replace the "pass" block at the bottom of bemt_coaxial.py)
-# =============================================================================
-if __name__ == "__main__":
-    # 1. Setup paths
-    # This ensures it finds the file even if you run it from a different folder
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    yaml_path = os.path.join(base_dir, "data", "pybemt_tmotor28.yaml")
-    
-    # 2. Load Propellers
-    print(f"Loading propeller from: {yaml_path}")
-    rot1 = propeller.Propeller.load_from_yaml(yaml_path)
-    rot2 = propeller.Propeller.load_from_yaml(yaml_path)
-    
-    # Optional: Make rotor 2 slightly smaller or different to test flexibility
-    # rot2.radius = rot1.radius * 0.95 
-
-    # 3. Define Conditions
-    fl = fluid.Fluid(altitude=0.0)
-    V_inf = 5.0     # Climb speed [m/s]
-    RPM = 5000.0
-    omega = RPM * 2 * np.pi / 60.0
-    
-    # 4. Run the Solver
-    print(f"Running Coaxial BEMT at {RPM} RPM, V_inf={V_inf} m/s...")
-    
-    totals, out1, out2, coupling = coaxial_bemt_fixed(
-        rot1, rot2, fl, 
-        V_inf=V_inf, 
-        omega1=omega, 
-        omega2=omega,
-        trim_rotor2=True,      # This turns on the pitch adjustment logic
-        alpha_target_deg=3.0
-    )
-    
-    # 5. Plot Results
-    plot_diagnostics(out1, out2, totals, coupling, title_suffix=" (Test Run)")
