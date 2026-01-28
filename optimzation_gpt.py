@@ -174,11 +174,28 @@ def _assert_finite_eval(tag, totals, P):
 # Objective & constraints
 # -----------------------------------------------------------------------------
 def objective_power(x, base_rot1, base_rot2, fl, V_inf, r_R, cfg: Config):
+    # Call the system evaluation
     totals, _, _, _, P, _, _ = evaluate_system(x, base_rot1, base_rot2, fl, V_inf, r_R, cfg)
+    
+    # --- PRINTING LOGIC START ---
+    if not hasattr(objective_power, "_count"):
+        objective_power._count = 0
+    objective_power._count += 1
+
+    # Print every 'stage1_print_every' steps (or hardcode a number like 5)
+    if objective_power._count % getattr(cfg, "stage1_print_every", 5) == 0:
+        T = totals.get("T_total", 0.0)
+        omega_val = x[8]
+        # Print Power (kW), Thrust (N), and Omega
+        print(f"[STAGE2] eval={objective_power._count:4d}  "
+              f"P={P/1000:8.2f} kW  T={T:8.1f} N  omega={omega_val:7.2f}")
+    # --- PRINTING LOGIC END ---
+
     if (not np.isfinite(P)) or P <= 0:
         return 1e12
     if totals["T1"] <= 0 or totals["T2"] <= 0:
         return float(P + 1e8)
+    
     return float(P)
 
 
@@ -205,7 +222,7 @@ def objective_stage1_penalty(x, base_rot1, base_rot2, fl, V_inf, r_R, cfg: Confi
             f"P={P/1000:8.2f} kW  T={T:8.1f} N  omega={x[8]:7.2f}"
         )
 
-    return float(P + 1e9 * err * err)
+    return float(P + 1e6 * err * err)
 
 
 def thrust_eq_constraint(x, base_rot1, base_rot2, fl, V_inf, r_R, cfg: Config, T_target: float):
@@ -447,23 +464,24 @@ def main():
 
     omega_max = cfg.M_tip_max * float(fl.a) / max(R1, R2)
     omega_min = 0.20 * omega_max
-    omega0 = 0.60 * omega_max
+    omega0 = 0.90 * omega_max
 
-    # Initial guess
-    x0 = np.array([
-        0.10, 0.11, 0.10, 0.07,
-        18.0, 8.0,
-        16.0, 7.0,
-        omega0
-    ], dtype=float)
-
-    # Bounds
-    c_lb, c_ub = 0.03, 0.18
+    # New: Allow normalized chord to be around 1.0
+    c_lb, c_ub = 0.5, 2.5 
     b_lb, b_ub = -5.0, 45.0
+    
     bounds = Bounds(
         [c_lb, c_lb, c_lb, c_lb, b_lb, b_lb, b_lb, b_lb, omega_min],
         [c_ub, c_ub, c_ub, c_ub, b_ub, b_ub, b_ub, b_ub, omega_max],
     )
+    
+    # CORRECTED x0: Chord values (first 4) are now 1.0, which is inside [0.5, 2.5]
+    x0 = np.array([
+        1.0, 1.0, 1.0, 0.8,     # <--- FIXED: These must be >= c_lb (0.5)
+        25.0, 10.0,             # Pitch Rotor 1
+        22.0, 9.0,              # Pitch Rotor 2
+        omega0                  # Omega
+    ], dtype=float)
 
     print("=== DESIGN CASE ===")
     print(f"Weight W: {W:.2f} N")

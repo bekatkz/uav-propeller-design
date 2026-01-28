@@ -66,15 +66,16 @@ Use root cutout = 0.1R and dont use the section data we provided for the group p
 
 Inputs for final report:
 
-aircraft weight: 2500kg
-N_rotors: 2
-N_blades: 4
+aircraft weight: 650kg 
+N_rotors (coaxial rotors): 8
+N_blades: 2
 ISA altitude: 500m
 design climb speed: 3 m/s
 NACA airfoil: 2412
-Disk loading: 200 N/m²
-tip mach number: 0.63
-design blade loading: 0.1
+Disk loading: 160 N/m²  
+(calculated for each rotor --> distribute loading on 2xNrotor)
+tip mach number: 0.4
+design blade loading: 0.1 
 relation R_upper/R_lower = 1
 
 
