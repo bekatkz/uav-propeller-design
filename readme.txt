@@ -72,9 +72,9 @@ design climb speed: 3 m/s
 NACA airfoil: 2412
 Disk loading: 160 N/m²  
 (calculated for each rotor --> distribute loading on 2xNrotor)
-tip mach number: 0.4
+tip mach number - optimize
 design blade loading: 0.1 
 relation R_upper/R_lower = 1
 
 
-I should optimize for the chord, twist, tip speed, and relation lower and upper disk area A_upper/A_lower
+I should optimize for the chord, twist, tip speed
