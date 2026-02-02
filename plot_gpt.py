@@ -2,84 +2,71 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import CubicSpline
-
 import propeller
 
-def plot_blade_planform_normalized(yaml_path, title="Blade Planform (Normalized r/R)"):
+def plot_blade_true_1to1(yaml_path):
     """
-    Loads a Propeller from YAML and plots the blade planform in non-dimensional coordinates.
-    X-axis: r/R (0 to 1)
-    Y-axis: x/R (Chordwise position normalized by Radius)
+    Plots the blade planform with a strict 1:1 data aspect ratio.
+    Manually sets c_ref = 0.15 to correct the scale.
     """
-
-    # 1. Load optimized rotor
+    # 1. Load Data
     if not os.path.exists(yaml_path):
-        print(f"Error: File not found at {yaml_path}")
+        print(f"Error: YAML file not found at {yaml_path}")
         return
 
     rot = propeller.Propeller.load_from_yaml(yaml_path)
-    R = float(rot.radius)
+    
+    # --- THE FIX: FORCE THE REFERENCE CHORD ---
+    rot.c_ref = 0.15  # <--- CRITICAL FIX: Matches your optimization config
+    # ------------------------------------------
 
-    # 2. Get Coordinates
-    # r_R is already normalized (0 to 1)
-    r_R = np.asarray(rot.r_R, dtype=float)
-    
-    # Calculate dimensional chord [m] first: (chord_values * c_ref)
-    c_dim = np.asarray(rot.chord, dtype=float) * float(rot.c_ref)
-    
-    # Normalize chord by Radius to get c/R
-    c_R = c_dim / R
+    # Get Physical dimensions
+    R_tip = float(rot.radius)
+    r_coords = np.array(rot.r_R) * R_tip
+    chord_len = np.array(rot.chord) * rot.c_ref  # Now this will be ~0.375m max
 
-    # 3. Define LE/TE referenced to 3/4-chord line at x=0
-    # x_LE = -0.75 * c
-    # x_TE = +0.25 * c
-    # We normalize these by R as well
-    x_le_norm = -0.75 * c_R
-    x_te_norm = +0.25 * c_R
+    # 2. Define Geometry relative to Pitch Axis (c/4)
+    y_le =  0.25 * chord_len
+    y_te = -0.75 * chord_len
 
-    # 4. Spline for smooth plotting
-    # Create a smooth vector from min(r/R) to max(r/R)
-    r_R_fine = np.linspace(r_R.min(), r_R.max(), 400)
-    
-    le_spline = CubicSpline(r_R, x_le_norm, bc_type="natural")
-    te_spline = CubicSpline(r_R, x_te_norm, bc_type="natural")
-    
-    x_le_fine = le_spline(r_R_fine)
-    x_te_fine = te_spline(r_R_fine)
+    # 3. Smoothing
+    r_fine = np.linspace(r_coords.min(), r_coords.max(), 500)
+    spline_le = CubicSpline(r_coords, y_le, bc_type='natural')
+    spline_te = CubicSpline(r_coords, y_te, bc_type='natural')
+    y_le_fine = spline_le(r_fine)
+    y_te_fine = spline_te(r_fine)
 
-    # 5. Plot
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    # Plot the spline edges
-    ax.plot(r_R_fine, x_le_fine, 'b-', label="Leading Edge")
-    ax.plot(r_R_fine, x_te_fine, 'b-', label="Trailing Edge")
-    
-    # Fill the blade area
-    ax.fill_between(r_R_fine, x_le_fine, x_te_fine, color='cyan', alpha=0.3)
+    # 4. Create Plot
+    fig, ax = plt.subplots(figsize=(15, 6))
 
-    # Add the 3/4 chord line (x=0)
-    ax.axhline(0.0, color='k', linestyle="--", alpha=0.5, label="3/4-chord line")
+    # Plot Edges
+    ax.plot(r_fine, y_le_fine, 'b-', linewidth=2, label='Leading Edge')
+    ax.plot(r_fine, y_te_fine, 'b-', linewidth=2, label='Trailing Edge')
+    
+    # Fill Blade
+    ax.fill_between(r_fine, y_te_fine, y_le_fine, color='cyan', alpha=0.3, label='Blade Surface')
+    
+    # Pitch Axis
+    ax.axhline(0, color='k', linestyle='--', alpha=0.6, label='Pitch Axis (c/4)')
+
+    # 5. STRICT EQUAL ASPECT RATIO
+    ax.set_aspect('equal', adjustable='box')
 
     # Formatting
-    ax.set_title(title)
-    ax.set_xlabel("Non-dimensional Radius ($r/R$)")
-    ax.set_ylabel("Non-dimensional Chordwise Position ($x/R$)")
+    ax.set_title(f"TRUE 1:1 Physical Scale (c_ref fixed to 0.15m)\nRadius: {R_tip:.3f} m | Max Chord: {np.max(chord_len):.3f} m", fontsize=14)
+    ax.set_xlabel("Radius [m]", fontsize=12)
+    ax.set_ylabel("Chordwise Width [m]", fontsize=12)
+    
+    # Force ticks to be consistent
+    ax.grid(True, which='major', color='gray', linestyle='-', linewidth=0.8)
+    ax.minorticks_on()
+    ax.grid(True, which='minor', color='gray', linestyle=':', linewidth=0.5)
+
     ax.legend(loc='upper right')
-    ax.grid(True)
-    
-    # Ensure aspect ratio is equal so the blade shape isn't distorted
-    ax.set_aspect('equal', adjustable='box')
-    
     plt.tight_layout()
     plt.show()
 
 if __name__ == "__main__":
-    # Point this to your optimized output file
-    # Example: "optimized_prop_upper.yaml" or "data/optimized_prop_upper.yaml"
-    filename = "pybemt_optimized_30stations.yaml" 
-    
-    # Check if file exists in current dir, otherwise try data/
-    if not os.path.exists(filename):
-        filename = os.path.join("data", filename)
-        
-    plot_blade_planform_normalized(filename, title="Optimized Blade Planform (Upper Rotor)")
+    # Update this path to your saved lower rotor file
+    filename = "data/pybemt_optimized_ehang_polished_lower.yaml"
+    plot_blade_true_1to1(filename)
