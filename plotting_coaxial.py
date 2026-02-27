@@ -52,11 +52,22 @@ def make_required_plots(npz_path: str, out_dir: str):
 
     r_R = d["r_R"]
 
+    # design-point geometry (UPDATED FOR INDEPENDENT CHORDS)
+    # Assuming your npz file saves them as 'c_over_R_U' and 'c_over_R_L'
     # design-point geometry
-    cR = d["c_over_R"]
+# Support BOTH independent and shared chord storage
+
+    if "c_over_R_U" in d.files and "c_over_R_L" in d.files:
+        cR_U = d["c_over_R_U"]
+        cR_L = d["c_over_R_L"]
+    else:
+        # fallback: shared chord distribution
+        cR = d["c_over_R"]
+        cR_U = cR
+        cR_L = cR
+    
     betaU = d["twistU_deg"]
     betaL = d["twistL_deg"]
-
     # design-point distributions
     phiU = d["phiU_deg"]
     phiL = d["phiL_deg"]
@@ -70,18 +81,16 @@ def make_required_plots(npz_path: str, out_dir: str):
 
     os.makedirs(out_dir, exist_ok=True)
     
-    
     plot_blade_planform_34chord(npz_path, out_dir, filename="fig_blade_planform.png")
-    
-    
 
-    # 1) Chord distribution
+    # 1) Chord distribution (UPDATED PLOT)
     plt.figure(figsize=(7.2, 4.6))
-    plt.plot(r_R, cR, label="Chord (shared, c/R)")
+    plt.plot(r_R, cR_U, label="Upper Blade (c/R)", color='blue')
+    plt.plot(r_R, cR_L, label="Lower Blade (c/R)", color='orange', linestyle='--')
     plt.grid(True)
     plt.xlabel("r/R [-]")
     plt.ylabel("c/R [-]")
-    plt.title("Chord distribution")
+    plt.title("Chord distribution (Upper vs Lower)")
     plt.legend()
     _savefig(os.path.join(out_dir, "fig_chord_distribution.png"))
 
@@ -181,16 +190,8 @@ def _cli():
 
 def plot_blade_planform_34chord(npz_path: str, out_dir: str, filename: str = "fig_blade_planform.png"):
     """
-    Creates a blade planform (LE/TE outline) plot with the 3/4-chord line fixed at x=0.
-
-    Uses saved NPZ keys:
-      - r_R     : non-dimensional radial stations [-]
-      - R       : rotor radius [m]
-      - chord_m : chord distribution [m] at the same stations
-
-    Geometry convention (3/4-chord at x=0):
-      x_LE = -0.75*c
-      x_TE = +0.25*c
+    Creates a blade planform (LE/TE outline) plot with the 3/4-chord line fixed at x=0
+    for BOTH the upper and lower blades.
     """
     import os
     import numpy as np
@@ -200,30 +201,53 @@ def plot_blade_planform_34chord(npz_path: str, out_dir: str, filename: str = "fi
 
     r_R = d["r_R"].astype(float)
     R = float(d["R"])
-    c = d["chord_m"].astype(float)
+    
+    # Read independent chords in meters
+    # Adjust the keys here to match what you save in your npz file!
+    # Read chord distribution (support both independent and shared)
+
+    if "chordU_m" in d.files and "chordL_m" in d.files:
+        cU = d["chordU_m"].astype(float)
+        cL = d["chordL_m"].astype(float)
+    else:
+        c = d["chord_m"].astype(float)
+        cU = c
+        cL = c
 
     r = r_R * R  # spanwise coordinate [m]
 
-    x_le = -0.75 * c
-    x_te = +0.25 * c
+    # Upper blade geometry
+    x_le_U = -0.75 * cU
+    x_te_U = +0.25 * cU
+    
+    # Lower blade geometry
+    x_le_L = -0.75 * cL
+    x_te_L = +0.25 * cL
 
     os.makedirs(out_dir, exist_ok=True)
 
     plt.figure(figsize=(6.8, 5.2))
-    plt.plot(x_le, r, label="LE — spline")
-    plt.plot(x_te, r, label="TE — spline")
-    plt.fill_betweenx(r, x_le, x_te, alpha=0.25)
-    plt.axvline(0.0, linestyle="--", label="3/4-chord line (x=0)")
+    
+    # Plot Upper Blade
+    plt.plot(x_le_U, r, label="Upper LE", color="blue")
+    plt.plot(x_te_U, r, label="Upper TE", color="blue")
+    plt.fill_betweenx(r, x_le_U, x_te_U, color="blue", alpha=0.15)
+    
+    # Plot Lower Blade
+    plt.plot(x_le_L, r, label="Lower LE", color="orange", linestyle="--")
+    plt.plot(x_te_L, r, label="Lower TE", color="orange", linestyle="--")
+    plt.fill_betweenx(r, x_le_L, x_te_L, color="orange", alpha=0.15)
+    
+    plt.axvline(0.0, linestyle=":", color="black", label="3/4-chord line (x=0)")
 
     plt.grid(True)
     plt.xlabel("x (chordwise) [m]")
     plt.ylabel("r (spanwise) [m]")
-    plt.title("Blade planform (3/4-chord reference at x=0)")
+    plt.title("Blade planform (Upper vs Lower)")
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, filename), dpi=220)
     plt.close()
-
 
 
 if __name__ == "__main__":

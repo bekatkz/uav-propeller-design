@@ -1,0 +1,18 @@
+COAXIAL OPTIMIZATION SUMMARY
+=============================================
+Altitude [m]              : 500.00
+Design climb speed [m/s]  : 3.00
+Disk loading [N/m^2]      : 160.00
+Target thrust/unit [N]    : 797.06
+
+Achieved thrust [N]       : 797.06
+Total shaft power [W]     : 9730.88
+Omega [rad/s]             : 91.826516
+RPM                       : 876.88
+Tip Mach                  : 0.3417
+Rotor radius [m]          : 1.2592
+Max c/R                   : 0.1348
+Mean solidity sigma       : 0.0717
+
+Stage2 success            : True
+Stage2 message            : Return from COBYLA because the trust region radius reaches its lower bound.

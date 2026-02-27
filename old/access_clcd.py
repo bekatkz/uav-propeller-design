@@ -4,9 +4,9 @@ from functools import lru_cache
 _AIRFOIL_CACHE = {}
 
 # bin sizes (tune)
-DALPHA = 0.25     # deg
-DLOGRE = 0.10     # log10(Re)
-DMA = 0.02        # Mach
+DALPHA = 0.5     # deg
+DLOGRE = 0.20     # log10(Re)
+DMA = 0.05        # Mach
 
 def get_CL_CD_from_neuralfoil(airfoil, alpha, Re, Ma):
     import aerosandbox as asb
@@ -14,10 +14,10 @@ def get_CL_CD_from_neuralfoil(airfoil, alpha, Re, Ma):
     if airfoil not in _AIRFOIL_CACHE:
         _AIRFOIL_CACHE[airfoil] = asb.Airfoil(f"naca{airfoil}")
     af = _AIRFOIL_CACHE[airfoil]
-    aero = af.get_aero_from_neuralfoil(alpha=float(alpha), Re=float(Re), mach=float(Ma), model_size="medium")
+    aero = af.get_aero_from_neuralfoil(alpha=float(alpha), Re=float(Re), mach=float(Ma), model_size="small")
     return float(aero["CL"]), float(aero["CD"])
 
-@lru_cache(maxsize=50000)
+@lru_cache(maxsize=200000)
 def _cached_base(airfoil, alpha_q, logRe_q, Ma_q):
     Re_q = 10.0 ** float(logRe_q)
     return get_CL_CD_from_neuralfoil(airfoil, alpha_q, Re_q, Ma_q)
