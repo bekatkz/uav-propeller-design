@@ -26,6 +26,7 @@ from scipy.interpolate import PchipInterpolator
 import fluid
 import bemt_coaxial
 import plotting_coaxial  # optional: just to generate plots at the end
+import yaml
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,17 @@ def enforce_monotone_washout(beta_ctrl_deg: np.ndarray) -> float:
     return float(np.sum(v * v))
 
 
+def enforce_chord_taper(cR_ctrl: np.ndarray) -> float:
+    """
+    Forces the chord to taper (shrink) towards the tip.
+    Penalizes the optimizer if an outer control point is wider than the previous one.
+    """
+    c = np.asarray(cR_ctrl, dtype=float)
+    # We check the difference between the 2nd, 3rd, and 4th control points
+    diffs = np.diff(c[1:]) 
+    v = np.maximum(diffs, 0.0)  # >0 means the chord incorrectly grew larger
+    return float(np.sum(v * v))
+
 def evaluate_design(x: np.ndarray, *, cfg: Config, fl: fluid.Fluid, r_R: np.ndarray, T_target_unit: float, V_inf: float) -> dict:
     x = np.asarray(x, dtype=float)
     cR_ctrl = x[0:4]
@@ -161,33 +173,44 @@ def evaluate_design(x: np.ndarray, *, cfg: Config, fl: fluid.Fluid, r_R: np.ndar
 def objective_stage1(x: np.ndarray, *, cfg: Config, fl: fluid.Fluid, r_R: np.ndarray, T_target_unit: float, V_inf: float) -> float:
     res = evaluate_design(x, cfg=cfg, fl=fl, r_R=r_R, T_target_unit=T_target_unit, V_inf=V_inf)
     
-
     P = float(res["P"])
     if (not np.isfinite(P)) or P <= 1.0:
         return 1e12
     
-    # ---- AoA "realism" penalty (avoid stall-exploiting solutions)
+    # ---- AoA "realism" and SMOOTHNESS penalties ----
     aU = np.asarray(res["upper"]["alpha_deg"], dtype=float)
     aL = np.asarray(res["lower"]["alpha_deg"], dtype=float)
     alpha_lim = float(cfg.alpha_max_deg)
     
+    # 1. Prevent Stall: Penalize exceeding max AoA limit
     viol = np.maximum(0.0, np.abs(aU) - alpha_lim)**2 + np.maximum(0.0, np.abs(aL) - alpha_lim)**2
-    penalty_alpha = 2e3 * float(np.mean(viol)) * max(P, 1.0)
+    penalty_alpha_limit = 2e3 * float(np.mean(viol)) * max(P, 1.0)
 
+    # 2. NEW - Flatten the AoA: Penalize variance (waviness) to force a stable, flat line
+    penalty_alpha_var = 5e3 * (float(np.var(aU)) + float(np.var(aL))) * max(P, 1.0)
+
+    # ---- Thrust constraint ----
     T = float(res["T"])
     shortfall = max(0.0, (T_target_unit - T) / max(T_target_unit, 1e-9))
     over = max(0.0, (T - (T_target_unit + cfg.thrust_tol_N)) / max(T_target_unit, 1e-9))
     penalty_T = (shortfall * shortfall + over * over) * 2e4 * P
 
+    # ---- Geometric Constraints (Forces a smooth, realistic blade) ----
     cR_max = float(np.max(res["c_over_R"]))
     penalty_cR = (max(0.0, cR_max - cfg.max_c_over_R) ** 2) * 5e4 * P
 
+    cR_ctrl = np.asarray(x, float)[0:4]
     betaU_ctrl = np.asarray(x, float)[4:9]
     betaL_ctrl = np.asarray(x, float)[9:14]
-    washout_pen = 2e3 * (enforce_monotone_washout(betaU_ctrl) + enforce_monotone_washout(betaL_ctrl)) * max(P, 1.0)
+    
+    # 3. STRICT Washout: Multiply by 10x so the optimizer can't ignore it
+    washout_pen = 2e4 * (enforce_monotone_washout(betaU_ctrl) + enforce_monotone_washout(betaL_ctrl)) * max(P, 1.0)
+    
+    # 4. NEW - Chord Taper: Force the blade to become thinner at the tip
+    chord_taper_pen = 5e4 * enforce_chord_taper(cR_ctrl) * max(P, 1.0)
 
-    return float(P + penalty_T + penalty_cR + washout_pen + penalty_alpha)
-
+    # Sum all penalties with the power calculation
+    return float(P + penalty_T + penalty_cR + washout_pen + chord_taper_pen + penalty_alpha_limit + penalty_alpha_var)
 
 def trim_omega_for_thrust(
     x_geom: np.ndarray,
@@ -235,6 +258,38 @@ def trim_omega_for_thrust(
     omega_trim = float(brentq(f, lo, hi, xtol=1e-6, rtol=1e-8, maxiter=80))
     _, res_trim = thrust_err(omega_trim)
     return omega_trim, res_trim
+
+
+def save_results_to_yaml(filepath: str, cfg: Config, final: dict, r_R: np.ndarray):
+    """
+    Saves the optimized propeller geometry and design state to a YAML file.
+    """
+    data = {
+        "design_state": {
+            "mass_kg": float(cfg.mass_kg),
+            "altitude_m": float(cfg.altitude_m),
+            "climb_speed_m_s": float(cfg.V_design),
+            "thrust_target_N": float(final["T"]),
+            "shaft_power_W": float(final["P"])
+        },
+        "rotor_geometry": {
+            "n_blades": int(cfg.n_blades),
+            "radius_m": float(final["R"]),
+            "airfoil_id": int(cfg.airfoil_id),
+            "omega_rad_s": float(final["omega"]),
+            "RPM": float(final["omega"] * 30.0 / np.pi)
+        },
+        "blade_distributions": {
+            "stations_r_R": [float(x) for x in r_R],
+            "chord_m": [float(x) for x in final["chord_m"]],
+            "chord_over_R": [float(x) for x in final["c_over_R"]],
+            "twist_upper_deg": [float(x) for x in final["twistU_deg"]],
+            "twist_lower_deg": [float(x) for x in final["twistL_deg"]]
+        }
+    }
+    
+    with open(filepath, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
 
 def main():
@@ -469,6 +524,13 @@ def main():
         T_sweep=T_sweep,
     )
 
+    # Generate YAML export
+    yaml_path = os.path.join(run_dir, "optimized_propeller.yaml")
+    try:
+        save_results_to_yaml(yaml_path, cfg, final, r_R)
+    except NameError:
+        print("[WARN] Could not save YAML. Make sure 'import yaml' is at the top of the file.")
+
     # Optional: generate plots automatically
     plotting_coaxial.make_required_plots(npz_path, run_dir)
 
@@ -476,6 +538,7 @@ def main():
     print(f"Run folder : {run_dir}")
     print(f"NPZ        : {npz_path}")
     print(f"Summary    : {os.path.join(run_dir, 'summary.txt')}")
+    print(f"YAML       : {yaml_path}")  # <--- Added to console output
     print("PNGs       : fig_*.png in run folder")
 
 

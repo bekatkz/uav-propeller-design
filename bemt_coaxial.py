@@ -178,24 +178,26 @@ def bemt_single(
 
         # Tip/root loss
         F = prandtl_loss(B, r, R, r_root_m, phi)
-        dTdr *= F
-        dQdr *= F
-
-        # Totals
-        T = float(np.trapz(dTdr, r))
-        Q = float(np.trapz(dQdr, r))
-
-        # Momentum-based update for induction (robust, not overly aggressive)
-        # Use annulus momentum with induced velocity vi = a*Vt (model-consistent here)
-        # dT = 4*pi*r*rho*Vax*vi*F dr  -> solve for vi (and thus a)
+        
+        # Momentum-based update for induction (F belongs in the denominator here!)
         denom = 4.0 * np.pi * rho * r * np.maximum(np.abs(Vax), 1e-6) * np.maximum(F, 0.05)
         vi_new = _safe_clip(dTdr / np.maximum(denom, 1e-12), -0.8 * Vt, 0.8 * Vt)
-        a_new = vi_new / Vt
 
-        # Swirl update (simple)
-        # dQ = 4*pi*r^3*rho*Vax*omega*ap*F dr  -> solve ap
+        # Swirl update
         denom_q = 4.0 * np.pi * rho * (r**3) * np.maximum(np.abs(Vax), 1e-6) * np.maximum(F, 0.05) * omega
         ap_new = _safe_clip(dQdr / np.maximum(denom_q, 1e-12), -0.6, 0.6)
+        
+        # Note: Do not multiply dTdr or dQdr by F for the total integration, 
+        # the tip loss is now physically captured by higher vi -> lower alpha -> lower lift.
+        
+        # Totals (calculated just to monitor if needed during loop)
+        T = float(np.trapz(dTdr, r))
+        Q = float(np.trapz(dQdr, r))        
+
+
+        a_new = vi_new / Vt
+
+        
 
         # Relaxation
         a = (1.0 - relax) * a + relax * a_new
@@ -276,14 +278,15 @@ def coaxial_bemt_fixed(
     )
 
     # Estimate upper induced component (elementwise) and pass to lower as added inflow
-    vi_upper = upper["Vax"] - float(V_inf)               # local induced increment [m/s]
-    V_inf_lower = float(V_inf) + wake_factor * vi_upper  # array inflow for lower
+    # Estimate upper induced component (elementwise)
+    vi_upper = upper["Vax"] - float(V_inf)               
 
-    # For the lower rotor, we pass an "effective" V_inf as an array by solving stationwise.
-    # Simplicity: we run bemt_single with the mean of that field, then correct by feeding the
-    # stationwise inflow inside the loop would require refactoring. For grading, the standard
-    # compromise is to use a uniform inflow equal to the disk-average wake increment.
-    V_inf_lower_eff = float(np.mean(V_inf_lower))
+    # Calculate intermediate wake contraction based on rotor spacing (z)
+    # v_wake = vi * (1 + z / sqrt(R^2 + z^2))
+    wake_factor_calc = 1.0 + (spacing / np.sqrt(R**2 + spacing**2))
+    
+    # Pass to lower as a local added inflow ARRAY (maintains radial distribution)
+    V_inf_lower = float(V_inf) + wake_factor_calc * vi_upper  
 
     lower = bemt_single(
         rho=rho, mu=mu, a_sound=a_sound,
@@ -291,7 +294,7 @@ def coaxial_bemt_fixed(
         R=R, B=B, omega=omega,
         chord=chord,
         twist_deg=twist_lower_deg,
-        V_inf=V_inf_lower_eff,
+        V_inf=V_inf_lower, # <--- Pass the numpy array directly!
         airfoil=airfoil,
         n_stations=n_stations,
         r_root_cutout=r_root_cutout,

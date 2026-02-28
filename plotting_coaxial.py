@@ -83,14 +83,15 @@ def make_required_plots(npz_path: str, out_dir: str):
     
     plot_blade_planform_34chord(npz_path, out_dir, filename="fig_blade_planform.png")
 
-    # 1) Chord distribution (UPDATED PLOT)
+    
+    # 1) Chord distribution (Shared)
+    cR = d["c_over_R"]  # Load the shared array directly
     plt.figure(figsize=(7.2, 4.6))
-    plt.plot(r_R, cR_U, label="Upper Blade (c/R)", color='blue')
-    plt.plot(r_R, cR_L, label="Lower Blade (c/R)", color='orange', linestyle='--')
+    plt.plot(r_R, cR, label="Shared Chord (c/R)", color='green', linewidth=2)
     plt.grid(True)
     plt.xlabel("r/R [-]")
     plt.ylabel("c/R [-]")
-    plt.title("Chord distribution (Upper vs Lower)")
+    plt.title("Chord Distribution (Shared for Both Propellers)")
     plt.legend()
     _savefig(os.path.join(out_dir, "fig_chord_distribution.png"))
 
@@ -127,23 +128,16 @@ def make_required_plots(npz_path: str, out_dir: str):
     plt.legend()
     _savefig(os.path.join(out_dir, "fig_thrust_loading_dTdr.png"))
 
-    # 5) Power vs climb speed
+   # 5 & 6) Power vs climb speed (Including AND Excluding Climb)
     plt.figure(figsize=(7.2, 4.6))
-    plt.plot(Vs, P_shaft)
+    plt.plot(Vs, P_shaft, label="Power INCLUDING climb", color="blue", linewidth=2)
+    plt.plot(Vs, P_excess, label="Power EXCLUDING climb", color="orange", linestyle="--", linewidth=2)
     plt.grid(True)
     plt.xlabel("Climb speed Vc [m/s]")
-    plt.ylabel("Shaft power P [W]")
-    plt.title("Power vs climb speed (trimmed RPM)")
+    plt.ylabel("Power [W]")
+    plt.title("Power vs. Climb Speed")
+    plt.legend()
     _savefig(os.path.join(out_dir, "fig_power_vs_climb_speed.png"))
-
-    # 6) Power excluding climb power
-    plt.figure(figsize=(7.2, 4.6))
-    plt.plot(Vs, P_excess)
-    plt.grid(True)
-    plt.xlabel("Climb speed Vc [m/s]")
-    plt.ylabel("P_shaft - T*Vc [W]")
-    plt.title("Power excluding climb power (trimmed RPM)")
-    _savefig(os.path.join(out_dir, "fig_power_excluding_climb.png"))
 
     # Recommended: alpha
     if "alphaU_deg" in d.files and "alphaL_deg" in d.files:
@@ -191,7 +185,7 @@ def _cli():
 def plot_blade_planform_34chord(npz_path: str, out_dir: str, filename: str = "fig_blade_planform.png"):
     """
     Creates a blade planform (LE/TE outline) plot with the 3/4-chord line fixed at x=0
-    for BOTH the upper and lower blades.
+    for the shared chord distribution.
     """
     import os
     import numpy as np
@@ -202,53 +196,34 @@ def plot_blade_planform_34chord(npz_path: str, out_dir: str, filename: str = "fi
     r_R = d["r_R"].astype(float)
     R = float(d["R"])
     
-    # Read independent chords in meters
-    # Adjust the keys here to match what you save in your npz file!
-    # Read chord distribution (support both independent and shared)
-
-    if "chordU_m" in d.files and "chordL_m" in d.files:
-        cU = d["chordU_m"].astype(float)
-        cL = d["chordL_m"].astype(float)
-    else:
-        c = d["chord_m"].astype(float)
-        cU = c
-        cL = c
+    # Read the shared chord distribution
+    c = d["chord_m"].astype(float)
 
     r = r_R * R  # spanwise coordinate [m]
 
-    # Upper blade geometry
-    x_le_U = -0.75 * cU
-    x_te_U = +0.25 * cU
-    
-    # Lower blade geometry
-    x_le_L = -0.75 * cL
-    x_te_L = +0.25 * cL
+    # Shared blade geometry
+    x_le = -0.75 * c
+    x_te = +0.25 * c
 
     os.makedirs(out_dir, exist_ok=True)
 
     plt.figure(figsize=(6.8, 5.2))
     
-    # Plot Upper Blade
-    plt.plot(x_le_U, r, label="Upper LE", color="blue")
-    plt.plot(x_te_U, r, label="Upper TE", color="blue")
-    plt.fill_betweenx(r, x_le_U, x_te_U, color="blue", alpha=0.15)
+    # Plot Shared Blade
+    plt.plot(x_le, r, label="Leading Edge", color="black", linewidth=1.5)
+    plt.plot(x_te, r, label="Trailing Edge", color="black", linewidth=1.5)
+    plt.fill_betweenx(r, x_le, x_te, color="gray", alpha=0.3)
     
-    # Plot Lower Blade
-    plt.plot(x_le_L, r, label="Lower LE", color="orange", linestyle="--")
-    plt.plot(x_te_L, r, label="Lower TE", color="orange", linestyle="--")
-    plt.fill_betweenx(r, x_le_L, x_te_L, color="orange", alpha=0.15)
-    
-    plt.axvline(0.0, linestyle=":", color="black", label="3/4-chord line (x=0)")
+    plt.axvline(0.0, linestyle=":", color="red", label="3/4-chord line (x=0)")
 
     plt.grid(True)
     plt.xlabel("x (chordwise) [m]")
     plt.ylabel("r (spanwise) [m]")
-    plt.title("Blade planform (Upper vs Lower)")
+    plt.title("Blade Planform (Shared Chord)")
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, filename), dpi=220)
     plt.close()
-
 
 if __name__ == "__main__":
     _cli()
