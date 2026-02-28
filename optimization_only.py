@@ -51,7 +51,7 @@ class Config:
     wake_factor: float = 2.0
 
     # Optimization
-    de_maxiter: int = 20
+    de_maxiter: int = 50    
     de_popsize: int = 20
     stage2_maxiter: int = 1200
 
@@ -190,10 +190,14 @@ def objective_stage1(x: np.ndarray, *, cfg: Config, fl: fluid.Fluid, r_R: np.nda
     penalty_alpha_var = 5e3 * (float(np.var(aU)) + float(np.var(aL))) * max(P, 1.0)
 
     # ---- Thrust constraint ----
+    # ---- Thrust constraint ----
     T = float(res["T"])
     shortfall = max(0.0, (T_target_unit - T) / max(T_target_unit, 1e-9))
     over = max(0.0, (T - (T_target_unit + cfg.thrust_tol_N)) / max(T_target_unit, 1e-9))
-    penalty_T = (shortfall * shortfall + over * over) * 2e4 * P
+    
+    # Fix: Removed '* P' and massively increased the weight. 
+    # The optimizer MUST hit the thrust target now, no excuses.
+    penalty_T = (shortfall * shortfall + over * over) * 1e8
 
     # ---- Geometric Constraints (Forces a smooth, realistic blade) ----
     cR_max = float(np.max(res["c_over_R"]))
@@ -345,14 +349,14 @@ def main():
         dtype=float
     )
 
-    if os.path.exists(cfg.checkpoint_file):
-        try:
-            xcp = np.load(cfg.checkpoint_file)
-            if xcp.shape == x0.shape:
-                x0 = xcp
-                print(f"[INFO] Loaded checkpoint: {cfg.checkpoint_file}")
-        except Exception as e:
-            print(f"[WARN] Could not load checkpoint: {e}")
+   # if os.path.exists(cfg.checkpoint_file):
+    #    try:
+     #       xcp = np.load(cfg.checkpoint_file)
+      #      if xcp.shape == x0.shape:
+       #         x0 = xcp
+        #        print(f"[INFO] Loaded checkpoint: {cfg.checkpoint_file}")
+        #except Exception as e:
+          #  print(f"[WARN] Could not load checkpoint: {e}")
 
     # ---- Stage 1: DE
     print("=== STAGE 1: Differential Evolution ===")
@@ -360,7 +364,7 @@ def main():
     obj1 = lambda x: objective_stage1(x, cfg=cfg, fl=fl, r_R=r_R, T_target_unit=T_target_unit, V_inf=cfg.V_design)
 
     def de_cb(xk, convergence=None):
-        np.save(cfg.checkpoint_file, np.asarray(xk, dtype=float))
+       # np.save(cfg.checkpoint_file, np.asarray(xk, dtype=float))
         return False
 
     res1 = differential_evolution(
@@ -421,7 +425,7 @@ def main():
     )
 
     x_opt = np.asarray(res2.x, dtype=float)
-    np.save(cfg.checkpoint_file, x_opt)
+    #np.save(cfg.checkpoint_file, x_opt)
 
     # ---- Final eval at design point
     final = evaluate_design(x_opt, cfg=cfg, fl=fl, r_R=r_R, T_target_unit=T_target_unit, V_inf=cfg.V_design)
