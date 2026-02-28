@@ -51,7 +51,7 @@ class Config:
     wake_factor: float = 2.0
 
     # Optimization
-    de_maxiter: int = 50    
+    de_maxiter: int = 100
     de_popsize: int = 20
     stage2_maxiter: int = 1200
 
@@ -182,39 +182,47 @@ def objective_stage1(x: np.ndarray, *, cfg: Config, fl: fluid.Fluid, r_R: np.nda
     aL = np.asarray(res["lower"]["alpha_deg"], dtype=float)
     alpha_lim = float(cfg.alpha_max_deg)
     
-    # 1. Prevent Stall: Penalize exceeding max AoA limit
+    # 1. Prevent Stall
     viol = np.maximum(0.0, np.abs(aU) - alpha_lim)**2 + np.maximum(0.0, np.abs(aL) - alpha_lim)**2
-    penalty_alpha_limit = 2e3 * float(np.mean(viol)) * max(P, 1.0)
+    penalty_alpha_limit = 1e6 * float(np.mean(viol))  # Removed power scaling
 
-    # 2. NEW - Flatten the AoA: Penalize variance (waviness) to force a stable, flat line
-    penalty_alpha_var = 5e3 * (float(np.var(aU)) + float(np.var(aL))) * max(P, 1.0)
+    # 2. Flatten the AoA
+    penalty_alpha_var = 1e6 * (float(np.var(aU)) + float(np.var(aL))) # Removed power scaling
 
-    # ---- Thrust constraint ----
     # ---- Thrust constraint ----
     T = float(res["T"])
     shortfall = max(0.0, (T_target_unit - T) / max(T_target_unit, 1e-9))
     over = max(0.0, (T - (T_target_unit + cfg.thrust_tol_N)) / max(T_target_unit, 1e-9))
     
-    # Fix: Removed '* P' and massively increased the weight. 
-    # The optimizer MUST hit the thrust target now, no excuses.
+    # The heaviest penalty in the entire function to guarantee 797 N
     penalty_T = (shortfall * shortfall + over * over) * 1e8
 
-    # ---- Geometric Constraints (Forces a smooth, realistic blade) ----
+    # ---- Geometric Constraints ----
     cR_max = float(np.max(res["c_over_R"]))
-    penalty_cR = (max(0.0, cR_max - cfg.max_c_over_R) ** 2) * 5e4 * P
+    penalty_cR = (max(0.0, cR_max - cfg.max_c_over_R) ** 2) * 1e7 # Removed power scaling
 
     cR_ctrl = np.asarray(x, float)[0:4]
     betaU_ctrl = np.asarray(x, float)[4:9]
     betaL_ctrl = np.asarray(x, float)[9:14]
     
-    # 3. STRICT Washout: Multiply by 10x so the optimizer can't ignore it
-    washout_pen = 2e4 * (enforce_monotone_washout(betaU_ctrl) + enforce_monotone_washout(betaL_ctrl)) * max(P, 1.0)
+    # 3. STRICT Washout
+    washout_pen = 1e7 * (enforce_monotone_washout(betaU_ctrl) + enforce_monotone_washout(betaL_ctrl)) # Removed power scaling
     
-    # 4. NEW - Chord Taper: Force the blade to become thinner at the tip
-    chord_taper_pen = 5e4 * enforce_chord_taper(cR_ctrl) * max(P, 1.0)
+    # 4. Chord Taper
+    chord_taper_pen = 1e7 * enforce_chord_taper(cR_ctrl) # Removed power scaling
+    
+    # 5. Solidity Soft Constraint (Target ~ 0.1)
+    solidity = (cfg.n_blades * np.mean(res["chord_m"])) / (np.pi * res["R"])
+    current_blade_loading = 0.7 * solidity 
+    penalty_loading = 1e7 * (current_blade_loading - 0.1)**2 # Removed power scaling
 
-    # Sum all penalties with the power calculation
-    return float(P + penalty_T + penalty_cR + washout_pen + chord_taper_pen + penalty_alpha_limit + penalty_alpha_var)
+    # 6. Prevent Negative Thrust
+    neg_thrust_U = np.sum(np.maximum(0.0, -res["upper"]["dTdr"])**2)
+    neg_thrust_L = np.sum(np.maximum(0.0, -res["lower"]["dTdr"])**2)
+    penalty_neg_T = 1e7 * (neg_thrust_U + neg_thrust_L) # Removed power scaling
+
+    # Sum all penalties with the actual aerodynamic power calculation
+    return float(P + penalty_T + penalty_cR + washout_pen + chord_taper_pen + penalty_alpha_limit + penalty_alpha_var + penalty_loading + penalty_neg_T)
 
 def trim_omega_for_thrust(
     x_geom: np.ndarray,

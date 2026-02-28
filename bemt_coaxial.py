@@ -56,7 +56,7 @@ def prandtl_loss(B: int, r: np.ndarray, R: float, r_root: float, phi: np.ndarray
     F_root = (2.0 / np.pi) * np.arccos(np.exp(-f_root))
 
     F = F_tip * F_root
-    return np.clip(F, 0.05, 1.0)  # avoid singularities
+    return np.clip(F, 1e-4, 1.0)  # avoid singularities
 
 
 def _default_radial_grid(R: float, n_stations: int, r_root_cutout: float) -> Tuple[np.ndarray, np.ndarray]:
@@ -64,7 +64,7 @@ def _default_radial_grid(R: float, n_stations: int, r_root_cutout: float) -> Tup
     Returns r (m) and r_R (non-dim) from r_root_cutout*R to R.
     """
     r_root = r_root_cutout * R
-    r = np.linspace(r_root, R, int(n_stations))
+    r = np.linspace(r_root, R*0.995, int(n_stations))
     r_R = r / R
     return r, r_R
 
@@ -164,8 +164,9 @@ def bemt_single(
         Ma = W / np.maximum(a_sound, 1e-9)
 
         # Aero coefficients (cached inside access_clcd)
-        for i in range(r.size):
-            cl[i], cd[i] = get_CL_CD(airfoil, float(alpha_deg[i]), float(Re[i]), float(Ma[i]))
+        # Aero coefficients (cached inside access_clcd)
+        from access_clcd import get_CL_CD_array
+        cl, cd = get_CL_CD_array(airfoil, alpha_deg, Re, Ma)
 
         # Forces per unit span
         q = 0.5 * rho * W**2
@@ -235,6 +236,7 @@ def bemt_single(
 # ----------------------------
 # Coaxial (upper affects lower)
 # ----------------------------
+
 def coaxial_bemt_fixed(
     *,
     rho: float,
@@ -249,56 +251,29 @@ def coaxial_bemt_fixed(
     twist_lower_deg: np.ndarray,
     V_inf: float,
     airfoil: int = 2412,
-    spacing: float = 0.2,          # [m] rotor separation (kept for future extensions)
-    wake_factor: float = 2.0,      # far-wake velocity factor (momentum theory heuristic)
+    spacing: float = 0.2,          
+    wake_factor: float = 2.0,      
     n_stations: int = 30,
     r_root_cutout: float = 0.1,
 ) -> Dict[str, Dict[str, np.ndarray]]:
     """
-    Coaxial BEMT with one-way coupling:
-    - Upper rotor solved in freestream V_inf.
-    - Lower rotor sees increased axial inflow equal to V_inf + wake_factor * vi_upper.
-      Here vi_upper is estimated as (Vax_upper - V_inf).
-
-    Returns dict with 'upper', 'lower', plus combined totals.
+    Coaxial BEMT with one-way coupling.
     """
-    # Each rotor shares thrust equally by default
     T_each = 0.5 * float(T_total_target)
-
-    upper = bemt_single(
-        rho=rho, mu=mu, a_sound=a_sound,
-        T_target=T_each,
-        R=R, B=B, omega=omega,
-        chord=chord,
-        twist_deg=twist_upper_deg,
-        V_inf=V_inf,
-        airfoil=airfoil,
-        n_stations=n_stations,
-        r_root_cutout=r_root_cutout,
-    )
-
-    # Estimate upper induced component (elementwise) and pass to lower as added inflow
-    # Estimate upper induced component (elementwise)
-    vi_upper = upper["Vax"] - float(V_inf)               
-
-    # Calculate intermediate wake contraction based on rotor spacing (z)
-    # v_wake = vi * (1 + z / sqrt(R^2 + z^2))
     wake_factor_calc = 1.0 + (spacing / np.sqrt(R**2 + spacing**2))
     
-    # Pass to lower as a local added inflow ARRAY (maintains radial distribution)
-    V_inf_lower = float(V_inf) + wake_factor_calc * vi_upper  
-
-    lower = bemt_single(
-        rho=rho, mu=mu, a_sound=a_sound,
-        T_target=T_each,
-        R=R, B=B, omega=omega,
-        chord=chord,
-        twist_deg=twist_lower_deg,
-        V_inf=V_inf_lower, # <--- Pass the numpy array directly!
-        airfoil=airfoil,
-        n_stations=n_stations,
-        r_root_cutout=r_root_cutout,
-    )
+    if float(V_inf) >= 0.0:
+        # Hover / Climb
+        upper = bemt_single(rho=rho, mu=mu, a_sound=a_sound, T_target=T_each, R=R, B=B, omega=omega, chord=chord, twist_deg=twist_upper_deg, V_inf=V_inf, airfoil=airfoil, n_stations=n_stations, r_root_cutout=r_root_cutout)
+        vi_upper = upper["Vax"] - float(V_inf)               
+        V_inf_lower = float(V_inf) + wake_factor_calc * vi_upper  
+        lower = bemt_single(rho=rho, mu=mu, a_sound=a_sound, T_target=T_each, R=R, B=B, omega=omega, chord=chord, twist_deg=twist_lower_deg, V_inf=V_inf_lower, airfoil=airfoil, n_stations=n_stations, r_root_cutout=r_root_cutout)
+    else:
+        # Descent (Air moves bottom to top, lower rotor hits clean air first)
+        lower = bemt_single(rho=rho, mu=mu, a_sound=a_sound, T_target=T_each, R=R, B=B, omega=omega, chord=chord, twist_deg=twist_lower_deg, V_inf=V_inf, airfoil=airfoil, n_stations=n_stations, r_root_cutout=r_root_cutout)
+        vi_lower = lower["Vax"] - float(V_inf)
+        V_inf_upper = float(V_inf) + wake_factor_calc * vi_lower
+        upper = bemt_single(rho=rho, mu=mu, a_sound=a_sound, T_target=T_each, R=R, B=B, omega=omega, chord=chord, twist_deg=twist_upper_deg, V_inf=V_inf_upper, airfoil=airfoil, n_stations=n_stations, r_root_cutout=r_root_cutout)
 
     T_tot = float(upper["T"][0] + lower["T"][0])
     P_tot = float(upper["P"][0] + lower["P"][0])
@@ -311,3 +286,4 @@ def coaxial_bemt_fixed(
             "P": np.array([P_tot]),
         }
     }
+

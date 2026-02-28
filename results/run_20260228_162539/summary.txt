@@ -1,0 +1,17 @@
+COAXIAL OPTIMIZATION SUMMARY
+===========================
+Altitude [m]              : 500.00
+Design climb speed [m/s]  : 3.00
+Disk loading [N/m^2]      : 160.00
+Target thrust/unit [N]    : 797.06
+
+Achieved thrust [N]       : 254.12
+Total shaft power [W]     : 1984.27
+Omega [rad/s]             : 67.334673
+RPM                       : 643.00
+Tip Mach                  : 0.1772
+Rotor radius [m]          : 0.8904
+Max c/R                   : 0.9672
+
+Stage2 success            : False
+Stage2 message            : Did not converge to a solution satisfying the constraints. See `maxcv` for the magnitude of the violation.
