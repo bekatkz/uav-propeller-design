@@ -51,7 +51,7 @@ class Config:
     wake_factor: float = 2.0
 
     # Optimization
-    de_maxiter: int = 100
+    de_maxiter: int = 200
     de_popsize: int = 20
     stage2_maxiter: int = 1200
 
