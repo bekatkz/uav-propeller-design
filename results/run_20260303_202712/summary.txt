@@ -1,0 +1,57 @@
+DESIGN CASE
+------------
+Altitude: 500 m
+Density: 1.167 kg/m³
+Climb speed: 3 m/s
+Aircraft mass: 650 kg
+Rotors: 8 coaxial (16 disks)
+Disk loading: 160 N/m²
+Root cutout: 0.1R
+
+THRUST
+------
+Target thrust per coaxial unit (pair): 797 N
+Target thrust per disk: 399 N
+Upper thrust: 457 N
+Lower thrust: 340 N
+Total per coaxial unit: 797 N
+Total aircraft thrust: 6377 N
+Thrust error: 0.00%
+
+POWER
+------
+Upper power: 5865 W
+Lower power: 5675 W
+Total per coaxial: 11540 W
+Total aircraft: 92317 W
+
+IDEAL COMPARISON & EFFICIENCY
+-----------------------------
+Useful climb power:   2391 W
+Aerodynamic power:    9148 W
+Ideal hover (Single): 9332 W
+Ideal hover (Pair):   6653 W
+Hover-style FM:       0.727
+Propulsive Eff (ηp):  20.7%
+Power loading:        69.1 N/kW
+
+OPERATING POINT
+---------------
+Omega: 175 rad/s
+RPM: 1673
+Tip Mach: 0.46
+Max Mach: 0.46
+Max Reynolds: 4.1e+05
+
+AERODYNAMIC HEALTH
+------------------
+AoA upper: 5.4° – 6.2°
+AoA lower: -0.4° – 3.2°
+Max CL: 0.95
+No stall detected
+
+BLADE LOADING CHECK
+-------------------
+Solidity (Upper/Lower): 0.0522 / 0.0628
+System Blade Loading:   0.0980
+Stage2 Success:         True

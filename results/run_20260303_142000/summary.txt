@@ -1,0 +1,22 @@
+COAXIAL OPTIMIZATION SUMMARY
+===========================
+Altitude [m]              : 500.00
+Design climb speed [m/s]  : 3.00
+Disk loading [N/m^2]      : 160.00
+Target thrust/unit [N]    : 797.06
+
+Achieved thrust [N]       : 797.16
+Total shaft power [W]     : 11205.47
+RPM                       : 1968.40
+Tip Mach                  : 0.5424
+Rotor radius [m]          : 0.8904
+Max c/R (Upper)           : 0.0900
+Max c/R (Lower)           : 0.1148
+
+--- BLADE LOADING ---
+Solidity (Upper/Lower)    : 0.0366 / 0.0464
+Blade Loading (Upper)     : 0.1443
+Blade Loading (Lower)     : 0.0615
+Blade Loading (System)    : 0.0980
+
+Stage2 success            : True
